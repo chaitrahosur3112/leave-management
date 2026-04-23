@@ -9,22 +9,21 @@ async function getOrCreateBalance(teacherId, year) {
   const currentYear = year && !isNaN(year) ? year : new Date().getFullYear();
 
   try {
-    // 1. Try to find existing balance first
+    // 1. Try to find existing balance
     let balance = await LeaveBalance.findOne({ teacher: teacherId, year: currentYear });
 
     if (balance) return balance;
 
-    // 2. Create new balance if not found
-    balance = await Leave.create({
+    // 2. Create NEW balance (FIXED ✅)
+    balance = await LeaveBalance.create({
       teacher: teacherId,
-      year:    currentYear,
-      year
+      year: currentYear
     });
 
     return balance;
 
   } catch (err) {
-    // 3. If duplicate key error (race condition), fetch the existing one
+    // 3. Handle duplicate key (race condition)
     if (err.code === 11000) {
       return await LeaveBalance.findOne({ teacher: teacherId, year: currentYear });
     }

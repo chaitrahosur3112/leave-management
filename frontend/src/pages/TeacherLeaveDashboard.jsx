@@ -314,12 +314,18 @@ export default function TeacherLeaveDashboard() {
       <div style={{display:'flex',gap:3,background:'#F3F4F6',borderRadius:10,
         padding:4,marginBottom:24,width:'fit-content',flexWrap:'wrap'}}>
         {[
-          ['dashboard', 'Dashboard'],
-          ['apply',     'Apply Leave'],
-          ['substitutes',`Substitutes${subs.length?` (${subs.length})`:''}`],
-          ['hod',       'HOD View'],
-          ['principal', 'Principal View'],
-        ].map(([key,label])=>(
+        ['dashboard', 'Dashboard'],
+        ['apply', 'Apply Leave'],
+        ['substitutes', `Substitutes${subs.length ? ` (${subs.length})` : ''}`],
+
+        ...(user?.role === 'hod' || user?.role === 'principal'
+        ? [['hod', 'HOD View']]
+        : []),
+
+        ...(user?.role === 'principal'
+        ? [['principal', 'Principal View']]
+        : [])
+        ].map(([key, label]) => (
           <button key={key} onClick={()=>setTab(key)} style={{
             padding:'9px 18px',borderRadius:8,border:'none',cursor:'pointer',
             fontSize:13,fontWeight:600,transition:'all .15s',

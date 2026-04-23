@@ -9,7 +9,7 @@ const LeaveSchema = new mongoose.Schema(
   {
     teacher: {
       type: mongoose.Schema.Types.ObjectId, // References a Teacher document
-      ref: "Teacher",                        // "ref" enables .populate() to fetch teacher details
+      ref: "User",                        // "ref" enables .populate() to fetch teacher details
       required: true,
     },
     leaveType: {

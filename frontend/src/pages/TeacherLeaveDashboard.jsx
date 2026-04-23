@@ -420,6 +420,7 @@ export default function TeacherLeaveDashboard() {
                 <option value="casual">Casual</option>
                 <option value="sick">Sick</option>
                 <option value="emergency">Emergency</option>
+                <option value="paternity/maternity">Patenity/Maternity</option>
               </select>
             </div>
             <div style={{marginBottom:20}}>

@@ -1,39 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-
+import API from '../api'
 // ── API helper — uses proxy (package.json "proxy": "http://localhost:5000") ──
 const BASE = '/api';
-
-async function api(method, path, body) {
-  const token = localStorage.getItem('token') || '';
-
-  console.log('Token:', token);
-
-  // If no token at all, throw immediately
-  if (!token) throw new Error('NO_TOKEN');
-
-  const opts = {
-    method,
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-  };
-  if (body) opts.body = JSON.stringify(body);
-
-  let res;
-  try {
-    res = await fetch(BASE + path, opts);
-  } catch {
-    throw new Error('Cannot reach backend. Run: cd backend && node server.js');
-  }
-
-  let data;
-  try { data = await res.json(); } catch { data = {}; }
-
-  if (res.status === 401) throw new Error('AUTH_FAIL');
-  if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
-  return data;
-}
 
 // ── Helpers ────────────────────────────────────────────────────────
 const cap   = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
@@ -210,31 +178,43 @@ export default function TeacherLeaveDashboard() {
     setReady(true);
   },[]);
 
-  const loadTeacher = useCallback(async()=>{
-    try {
-      const [b,l,t,s] = await Promise.all([
-        api('GET','/leaves/balance'),
-        api('GET','/leaves/my'),
-        api('GET','/timetable/my'),
-        api('GET','/substitutes/my'),
-      ]);
-      setBalance(b); setLeaves(l); setTt(t); setSubs(s);
-    } catch(e) {
-      if (e.message==='AUTH_FAIL'||e.message==='NO_TOKEN') {
-        localStorage.clear(); setUser(null);
-      } else {
-        toast(e.message,'err');
-      }
+  const loadTeacher = useCallback(async () => {
+  console.log("LOAD TEACHER CALLED");
+
+  try {
+    const b = await API.get('/leaves/balance');
+    const l = await API.get('/leaves/my');
+    const t = await API.get('/timetable/my');
+    const s = await API.get('/substitutes/my');
+
+    console.log("RESPONSES:", b, l, t, s);
+
+    setBalance(b.data);
+    setLeaves(l.data);
+    setTt(t.data);
+    setSubs(s.data);
+
+  } catch (e) {
+    console.error("FULL ERROR:", e);
+
+    if (e.response?.status === 401) {
+      localStorage.clear();
+      setUser(null);
+    } else {
+      toast(e.response?.data?.message || e.message, 'err');
     }
-  },[toast]);
+  }
+}, [toast]);
 
   const loadAdmin = useCallback(async()=>{
     try {
-      const [l,s] = await Promise.all([
-        api('GET','/leaves/all'),
-        api('GET','/substitutes/all'),
-      ]);
-      setAllL(l); setAllS(s);
+      const [l, s] = await Promise.all([
+      API.get('/leaves/all'),
+      API.get('/substitutes/all'),
+    ]);
+
+      setAllL(l.data);
+      setAllS(s.data);
     } catch(e){
       if (e.message==='AUTH_FAIL'||e.message==='NO_TOKEN') {
         localStorage.clear(); setUser(null);
@@ -259,7 +239,7 @@ export default function TeacherLeaveDashboard() {
     if (new Date(endDate)<new Date(startDate)){toast('End date cannot be before start date','err');return;}
     setBusy(true);
     try {
-      await api('POST','/leaves',{startDate,endDate,reason:reason.trim(),leaveType});
+      await API.post('/leaves', {startDate,endDate,reason: reason.trim(),leaveType});
       toast('Leave applied! Substitute requests sent.');
       setForm({startDate:'',endDate:'',reason:'',leaveType:'casual'});
       await loadTeacher();
@@ -268,14 +248,14 @@ export default function TeacherLeaveDashboard() {
     finally{setBusy(false);}
   }
 
-  const doAccept  = async id=>{try{await api('PATCH',`/substitutes/${id}/accept`); toast('Accepted! HOD will review.'); setSubs(p=>p.filter(r=>r._id!==id));}catch(e){toast(e.message,'err');}};
-  const doDecline = async id=>{try{await api('PATCH',`/substitutes/${id}/decline`);toast('Declined.');setSubs(p=>p.filter(r=>r._id!==id));}catch(e){toast(e.message,'err');}};
-  const hodApprL  = async id=>{try{await api('PATCH',`/leaves/${id}/hod-approve`);       toast('HOD approved.');    setAllL(p=>p.map(l=>l._id===id?{...l,status:'hod_approved',hodApproval:true}:l));}catch(e){toast(e.message,'err');}};
-  const hodRejectL= async id=>{try{await api('PATCH',`/leaves/${id}/reject`);             toast('Rejected.','err'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'rejected'}:l));}catch(e){toast(e.message,'err');}};
-  const hodApprS  = async id=>{try{await api('PATCH',`/substitutes/${id}/hod-approve`);   toast('Confirmed.');      setAllS(p=>p.map(r=>r._id===id?{...r,status:'hod_approved'}:r));}catch(e){toast(e.message,'err');}};
-  const prApprL   = async id=>{try{await api('PATCH',`/leaves/${id}/principal-approve`);  toast('Fully approved. Balance deducted.'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'principal_approved'}:l));}catch(e){toast(e.message,'err');}};
-  const prRejectL = async id=>{try{await api('PATCH',`/leaves/${id}/reject`);             toast('Rejected.','err'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'rejected'}:l));}catch(e){toast(e.message,'err');}};
-  const prApprS   = async id=>{try{await api('PATCH',`/substitutes/${id}/principal-approve`);toast('Substitute approved.'); setAllS(p=>p.map(r=>r._id===id?{...r,status:'principal_approved'}:r));}catch(e){toast(e.message,'err');}};
+  const doAccept  = async id=>{try{await API.patch(`/substitutes/${id}/accept`); toast('Accepted! HOD will review.'); setSubs(p=>p.filter(r=>r._id!==id));}catch(e){toast(e.message,'err');}};
+  const doDecline = async id=>{try{await API.patch(`/substitutes/${id}/decline`);toast('Declined.');setSubs(p=>p.filter(r=>r._id!==id));}catch(e){toast(e.message,'err');}};
+  const hodApprL  = async id=>{try{await API.patch(`/leaves/${id}/hod-approve`);       toast('HOD approved.');    setAllL(p=>p.map(l=>l._id===id?{...l,status:'hod_approved',hodApproval:true}:l));}catch(e){toast(e.message,'err');}};
+  const hodRejectL= async id=>{try{await API.patch(`/leaves/${id}/reject`);             toast('Rejected.','err'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'rejected'}:l));}catch(e){toast(e.message,'err');}};
+  const hodApprS  = async id=>{try{await API.patch(`/substitutes/${id}/hod-approve`);   toast('Confirmed.');      setAllS(p=>p.map(r=>r._id===id?{...r,status:'hod_approved'}:r));}catch(e){toast(e.message,'err');}};
+  const prApprL   = async id=>{try{await API.patch(`/leaves/${id}/principal-approve`);  toast('Fully approved. Balance deducted.'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'principal_approved'}:l));}catch(e){toast(e.message,'err');}};
+  const prRejectL = async id=>{try{await API.patch(`/eaves/${id}/reject`);             toast('Rejected.','err'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'rejected'}:l));}catch(e){toast(e.message,'err');}};
+  const prApprS   = async id=>{try{await API.patch(`/substitutes/${id}/principal-approve`);toast('Substitute approved.'); setAllS(p=>p.map(r=>r._id===id?{...r,status:'principal_approved'}:r));}catch(e){toast(e.message,'err');}};
 
   const coverDay = form.startDate ? tt.find(d=>d.dayOfWeek===dayOf(form.startDate)) : null;
   const rowS={display:'flex',alignItems:'flex-start',gap:12,padding:'12px 0',

@@ -12,18 +12,12 @@ const protect = async (req, res, next) => {
 
     const token   = authHeader.split(' ')[1];
 
-    console.log("Received Token:", token);
-
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log("Decoded Token:", decoded);
 
     req.user = await User.findById(decoded.id).select('-password');
-    console.log("Retrieved User:", req.user);
-    
-    if (!req.user) {
-      console.log("User not found");
-      return res.status(401).json({ message: 'User not found' });
-    }
+    if (!req.user) 
+    console.log("User not found");
+    return res.status(401).json({ message: 'User not found' });
     next();
   } catch (err) {
     console.log("AUTH ERROR:", err.message);

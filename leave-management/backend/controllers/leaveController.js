@@ -5,21 +5,11 @@ const SubstituteRequest = require('../models/SubstituteRequest');
 const User             = require('../models/User');
 
 async function getOrCreateBalance(teacherId, year) {
-  const currentYear = year || new Date().getFullYear();
-
-  let balance = await LeaveBalance.findOne({
-    teacher: teacherId,
-    year: currentYear
-  });
-
-  if (!balance) {
-    balance = await LeaveBalance.create({
-      teacher: teacherId,
-      year: currentYear
-    });
-  }
-
-  return balance;
+  return await LeaveBalance.findOneAndUpdate(
+    { teacher: teacherId, year },
+    { $setOnInsert: { teacher: teacherId, year } },
+    { upsert: true, new: true }
+  );
 }
 
 // POST /api/leaves  — teacher applies leave
@@ -45,7 +35,7 @@ exports.applyLeave = async (req, res) => {
     const days  = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
 
     // Check leave balance
-    const balance = await getOrCreateBalance(req.user._id, year);
+    const balance   = await getOrCreateBalance(req.user._id, year);
     const isFirst   = month <= 6;
     const remaining = isFirst
       ? balance.firstHalfTotal  - balance.firstHalfUsed
@@ -57,22 +47,19 @@ exports.applyLeave = async (req, res) => {
       });
     }
 
-    // ✅ Create the Leave record (not LeaveBalance)
+    // Create the leave record
     const leave = await Leave.create({
-      teacher:   req.user._id,
-      startDate: start,
-      endDate:   end,
-      reason,
-      leaveType: leaveType || 'casual',
-      year,
+      teacher: req.user._id, startDate: start, endDate: end,
+      reason, leaveType: leaveType || 'casual'
     });
 
-    // Find timetable and create substitute requests
+    // Find timetable for that day and create substitute requests
     const dayName   = start.toLocaleDateString('en-US', { weekday: 'long' });
     const timetable = await Timetable.findOne({ teacher: req.user._id, dayOfWeek: dayName });
 
     if (timetable && timetable.periods.length > 0) {
       for (const period of timetable.periods) {
+        // First: same-class teachers
         const sameClassTeachers = await User.find({
           _id:     { $ne: req.user._id },
           role:    'teacher',
@@ -82,6 +69,7 @@ exports.applyLeave = async (req, res) => {
         let requestedTo = sameClassTeachers.map(t => t._id);
         let status      = 'open';
 
+        // If no same-class teachers, go to all teachers immediately
         if (requestedTo.length === 0) {
           const allTeachers = await User.find({ _id: { $ne: req.user._id }, role: 'teacher' });
           requestedTo = allTeachers.map(t => t._id);
@@ -119,6 +107,7 @@ exports.applyLeave = async (req, res) => {
 exports.getMyLeaves = async (req, res) => {
   try {
     const leaves = await Leave.find({ teacher: req.user._id })
+      .populate('substituteRequests')
       .sort({ createdAt: -1 });
     res.json(leaves);
   } catch (err) {
@@ -129,18 +118,10 @@ exports.getMyLeaves = async (req, res) => {
 // GET /api/leaves/balance
 exports.getLeaveBalance = async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
-      return res.status(401).json({ message: "User not authenticated properly" });
-    }
-
-    const year = new Date().getFullYear();
-
+    const year    = new Date().getFullYear();
     const balance = await getOrCreateBalance(req.user._id, year);
-
     res.json(balance);
-
   } catch (err) {
-    console.error("BALANCE ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -148,12 +129,19 @@ exports.getLeaveBalance = async (req, res) => {
 // GET /api/leaves/all  — HOD and Principal
 exports.getAllLeaves = async (req, res) => {
   try {
-    const leaves = await Leave.find().sort({ createdAt: -1 });
+    const leaves = await Leave.find()
+      .populate('teacher', 'name email department')
+      .populate({
+        path:     'substituteRequests',
+        populate: { path: 'substituteTeacher', select: 'name' }
+      })
+      .sort({ createdAt: -1 });
     res.json(leaves);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
+
 // PATCH /api/leaves/:id/hod-approve
 exports.hodApprove = async (req, res) => {
   try {

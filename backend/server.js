@@ -11,7 +11,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ── Database ───────────────────────────────────────────────────────
-mongoose.connect(process.env.MONGO_URI || 'mongodb+srv://aps123:HVubD67UWQVK2ilT@leave123.bfxaowu.mongodb.net/leave-management')
+mongoose.connect(process.env.MONGO_URI )
   .then(() => console.log(' MongoDB connected'))
   .catch(err => console.error(' MongoDB error:', err.message));
 

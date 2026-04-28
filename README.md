@@ -1,3 +1,5 @@
+``` bash
+
 1️⃣ Clone the Repository
 git clone https://github.com/your-username/leave-management.git
 cd leave-management
@@ -12,7 +14,7 @@ MONGO_URI=your_mongodb_connection_string
 JWT_SECRET=your_secret_key
 PORT=5000
 4️⃣ Run Backend
-npm start
+npm run dev
 
 Server will run on:
 
@@ -20,4 +22,5 @@ http://localhost:5000
 5️⃣ Setup Frontend
 cd ../frontend
 npm install
-npm start
+npm run dev
+```

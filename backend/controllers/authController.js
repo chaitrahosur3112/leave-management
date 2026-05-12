@@ -15,7 +15,9 @@ exports.register = async (req, res) => {
     if (exists) return res.status(400).json({ message: 'Email already registered' });
 
     const user = await User.create({
-      name, email, password,
+    name,
+    email: email.toLowerCase(),
+    password,
       role:       role       || 'teacher',
       department: department || 'General',
       subjects:   subjects   || [],
@@ -49,7 +51,7 @@ exports.login = async (req, res) => {
     if (!email || !password)
       return res.status(400).json({ message: 'Email and password required' });
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: 'Invalid email or password' });
 
     const isMatch = await user.matchPassword(password);

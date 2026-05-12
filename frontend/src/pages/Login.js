@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import API from '../api';
-import { useNavigate } from 'react-router-dom';
+import { data, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
 export default function Login() {
@@ -9,13 +9,16 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    console.log('Form data:', form);
     try {
       const { data } = await API.post('/auth/login', form);
+      console.log('Response data:', data);
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
       toast.success('Logged in!');
       navigate('/');
     } catch (err) {
+      console.error('Error response:', err.response?.data || err.message); 
       toast.error(err.response?.data?.message || 'Login failed');
     }
   };

@@ -34,13 +34,17 @@ const LeaveSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
-    status: {
-      type: String,
-      // The approval flow: pending → hod_approved → approved
-      // Or at any point: rejected
-      enum: ["pending", "hod_approved", "approved", "rejected"],
-      default: "pending",
-    },
+   status: {
+   type: String,
+   enum: [
+    "pending",
+    "substitute_assigned",   
+    "hod_approved",
+    "principal_approved",    
+    "rejected"
+   ],
+   default: "pending",
+   },
     hodRemark: { type: String, default: "" },
     principalRemark: { type: String, default: "" },
     // Track which admin took action

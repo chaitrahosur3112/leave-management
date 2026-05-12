@@ -250,10 +250,10 @@ export default function TeacherLeaveDashboard() {
 
   const doAccept  = async id=>{try{await API.patch(`/substitutes/${id}/accept`); toast('Accepted! HOD will review.'); setSubs(p=>p.filter(r=>r._id!==id));}catch(e){toast(e.message,'err');}};
   const doDecline = async id=>{try{await API.patch(`/substitutes/${id}/decline`);toast('Declined.');setSubs(p=>p.filter(r=>r._id!==id));}catch(e){toast(e.message,'err');}};
-  const hodApprL  = async id=>{try{await API.patch(`/leaves/${id}/hod-approve`);       toast('HOD approved.');    setAllL(p=>p.map(l=>l._id===id?{...l,status:'hod_approved',hodApproval:true}:l));}catch(e){toast(e.message,'err');}};
+  const hodApprL  = async id=>{try{await API.patch(`/leaves/${id}/hod-approve`);       toast('HOD approved.');    setAllL(p=>p.map(l=>l._id===id?{...l,status:'hod_approved',hodApproval:true}:l));await loadAdmin();}catch(e){toast(e.message,'err');}};
   const hodRejectL= async id=>{try{await API.patch(`/leaves/${id}/reject`);             toast('Rejected.','err'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'rejected'}:l));}catch(e){toast(e.message,'err');}};
   const hodApprS  = async id=>{try{await API.patch(`/substitutes/${id}/hod-approve`);   toast('Confirmed.');      setAllS(p=>p.map(r=>r._id===id?{...r,status:'hod_approved'}:r));}catch(e){toast(e.message,'err');}};
-  const prApprL   = async id=>{try{await API.patch(`/leaves/${id}/principal-approve`);  toast('Fully approved. Balance deducted.'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'principal_approved'}:l));}catch(e){toast(e.message,'err');}};
+  const prApprL   = async id=>{try{await API.patch(`/leaves/${id}/principal-approve`);  toast('Fully approved. Balance deducted.'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'principal_approved'}:l));await loadAdmin();}catch(e){toast(e.message,'err');}};
   const prRejectL = async id=>{try{await API.patch(`/eaves/${id}/reject`);             toast('Rejected.','err'); setAllL(p=>p.map(l=>l._id===id?{...l,status:'rejected'}:l));}catch(e){toast(e.message,'err');}};
   const prApprS   = async id=>{try{await API.patch(`/substitutes/${id}/principal-approve`);toast('Substitute approved.'); setAllS(p=>p.map(r=>r._id===id?{...r,status:'principal_approved'}:r));}catch(e){toast(e.message,'err');}};
 

@@ -9,6 +9,23 @@ const userSchema = new mongoose.Schema({
   department: { type: String, default: 'General' },
   subjects:   [{ type: String }],
   classes:    [{ type: String }],  // e.g. ["10A", "10B"]
+   firstHalfTotal: {
+    type: Number,
+    default: 7
+  },
+  firstHalfUsed: {
+    type: Number,
+    default: 0
+  },
+  secondHalfTotal: {
+    type: Number,
+    default: 8
+  },
+  secondHalfUsed: {
+    type: Number,
+    default: 0
+  }
+
 }, { timestamps: true });
 
 userSchema.pre('save', async function () {

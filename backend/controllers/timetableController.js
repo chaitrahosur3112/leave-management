@@ -1,29 +1,23 @@
+// controllers/timetableController.js
 const Timetable = require('../models/Timetable');
 
-// GET /api/timetable/my
+// GET /api/timetable/my  — logged-in teacher's own timetable
 exports.getMyTimetable = async (req, res) => {
   try {
-    const tt = await Timetable.find({ teacher: req.user._id });
-    res.json(tt);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    const tt = await Timetable.findOne({ teacher: req.user._id });
+    // Return days array (or empty array if no timetable yet)
+    res.json(tt ? tt.days : []);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 };
 
-// POST /api/timetable  — HOD/Principal sets timetable
-exports.setTimetable = async (req, res) => {
+// GET /api/timetable/all  — admin: all timetables
+exports.getAllTimetables = async (req, res) => {
   try {
-    const { teacherId, dayOfWeek, periods } = req.body;
-    if (!teacherId || !dayOfWeek || !periods) {
-      return res.status(400).json({ message: 'teacherId, dayOfWeek and periods required' });
-    }
-    const tt = await Timetable.findOneAndUpdate(
-      { teacher: teacherId, dayOfWeek },
-      { teacher: teacherId, dayOfWeek, periods },
-      { upsert: true, new: true }
-    );
-    res.json(tt);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    const all = await Timetable.find().populate('teacher', 'name email role');
+    res.json(all);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 };

@@ -4,7 +4,6 @@ const SubstituteRequest = require('../models/SubstituteRequest');
 const Timetable = require('../models/Timetable');
 const LeaveBalance = require('../models/LeaveBalance');
 const User = require('../models/User');
-
 const TYPES = ['casual', 'sick', 'emergency', 'paternity/maternity'];
 const ACTIVE = ['coverage_pending', 'substitute_confirmed', 'submitted', 'hod_approved', 'principal_approved'];
 const CONFIRMED = ['accepted', 'hod_approved', 'principal_approved'];
@@ -33,6 +32,12 @@ async function transaction(work) {
   try { let result; await session.withTransaction(async () => { result = await work(session); }); return result; }
   finally { await session.endSession(); }
 }
+async function lock(session, teachers) {
+  for (const teacher of [...new Set(teachers.map(id))].sort()) {
+    const result = await User.updateOne({ _id: teacher }, { $inc: { workflowRevision: 1 } }, { session });
+    if (!result.matchedCount) fail('Teacher not found.', 404);
+  }
+}
 async function coverage(leave, session) {
   const requests = await SubstituteRequest.find({ leave: leave._id }).session(session);
   const expected = leave.substituteRequests.map(id);
@@ -48,28 +53,26 @@ async function eligible(teacher, request, session) {
   const periods = tt?.days.find(d => d.dayOfWeek === request.dayOfWeek)?.periods || [];
   if (!periods.some(p => p.className === request.className)) return false;
   if (periods.some(p => p.periodNumber === request.periodNumber)) return false;
-  const busy = await SubstituteRequest.exists({ substituteTeacher: teacher, date: request.date, periodNumber: request.periodNumber, status: { $in: CONFIRMED } }).session(session);
-  if (busy) return false;
-  const absent = await Leave.exists({ teacher, startDate: { $lte: request.date }, endDate: { $gte: request.date }, status: { $in: ['submitted', 'hod_approved', 'principal_approved'] } }).session(session);
-  return !absent;
+  if (await SubstituteRequest.exists({ substituteTeacher: teacher, date: request.date, periodNumber: request.periodNumber, status: { $in: CONFIRMED } }).session(session)) return false;
+  if (await Leave.exists({ teacher, startDate: { $lte: request.date }, endDate: { $gte: request.date }, status: { $in: ['submitted', 'hod_approved', 'principal_approved'] } }).session(session)) return false;
+  return true;
 }
 async function createCoverage(teacher, body) {
   const { start, end } = range(body.startDate, body.endDate);
   if (!TYPES.includes(body.leaveType)) fail('Invalid leave type.');
   return transaction(async session => {
-    const overlap = await Leave.exists({ teacher, status: { $in: ACTIVE }, startDate: { $lte: end }, endDate: { $gte: start } }).session(session);
-    if (overlap) fail('An active leave already overlaps this date range.', 409);
+    await lock(session, [teacher]);
+    if (await Leave.exists({ teacher, status: { $in: ACTIVE }, startDate: { $lte: end }, endDate: { $gte: start } }).session(session)) fail('An active leave already overlaps this date range.', 409);
     const tt = await Timetable.findOne({ teacher }).session(session);
     if (!tt) fail('You have no timetable assigned.');
     const periods = days(start, end).flatMap(d => (tt.days.find(x => x.dayOfWeek === dayName(d))?.periods || []).map(p => ({ date: d, dayOfWeek: dayName(d), periodNumber: p.periodNumber, subject: p.subject, className: p.className, startTime: p.startTime, endTime: p.endTime, absentTeacher: teacher, status: 'open' })));
     if (!periods.length) fail('No scheduled periods in this date range.');
-    const keys = periods.map(p => key(p.date, p.periodNumber));
-    if (new Set(keys).size !== keys.length) fail('Timetable contains duplicate period numbers.');
+    if (new Set(periods.map(p => key(p.date, p.periodNumber))).size !== periods.length) fail('Timetable contains duplicate period numbers.');
     const [leave] = await Leave.create([{ teacher, startDate: start, endDate: end, leaveType: body.leaveType, status: 'coverage_pending' }], { session });
     const requests = await SubstituteRequest.create(periods.map(p => ({ ...p, leave: leave._id })), { session });
     leave.substituteRequests = requests.map(r => r._id);
     await leave.save({ session });
-    return { leave, requests, createdCount: requests.length };
+    return { leave, requests, createdCount: requests.length, message: `${requests.length} period(s) requested. Leave submission unlocks after every period is accepted.` };
   });
 }
 async function accept(requestId, teacher) {
@@ -77,25 +80,24 @@ async function accept(requestId, teacher) {
     const request = await SubstituteRequest.findById(requestId).session(session);
     if (!request) fail('Request not found.', 404);
     if (request.status !== 'open') fail('Request is no longer open.', 409);
+    await lock(session, [teacher, request.absentTeacher]);
     if (!await eligible(teacher, request, session)) fail('You are not available or eligible for this period.', 409);
     const leave = await Leave.findById(request.leave).session(session);
     if (!leave || !['coverage_pending', 'substitute_confirmed'].includes(leave.status)) fail('Leave is not accepting substitutes.', 409);
     const claimed = await SubstituteRequest.findOneAndUpdate({ _id: requestId, status: 'open' }, { $set: { status: 'accepted', substituteTeacher: teacher } }, { new: true, session });
     if (!claimed) fail('Another teacher already accepted this period.', 409);
     const state = await coverage(leave, session);
-    if (state.complete) {
-      await Leave.updateOne({ _id: leave._id, status: 'coverage_pending' }, { $set: { status: 'substitute_confirmed', coverageCompletedAt: new Date() } }, { session });
-    }
+    if (state.complete) await Leave.updateOne({ _id: leave._id, status: 'coverage_pending' }, { $set: { status: 'substitute_confirmed', coverageCompletedAt: new Date() } }, { session });
     return { request: claimed, coverage: state };
   });
 }
 async function submit(leaveId, teacher, body) {
   return transaction(async session => {
+    await lock(session, [teacher]);
     const leave = await Leave.findOne({ _id: leaveId, teacher }).session(session);
     if (!leave) fail('Leave not found.', 404);
     if (leave.status !== 'substitute_confirmed') fail('All coverage must be confirmed before submission.', 409);
-    const state = await coverage(leave, session);
-    if (!state.complete) fail('Not every required period has an accepted substitute.', 409);
+    if (!(await coverage(leave, session)).complete) fail('Not every required period has an accepted substitute.', 409);
     if (typeof body.reason !== 'string' || !body.reason.trim()) fail('Reason is required.');
     if (body.leaveType && body.leaveType !== leave.leaveType) fail('Leave type cannot change after coverage is requested.');
     if (body.startDate && date(body.startDate).getTime() !== leave.startDate.getTime()) fail('Date range cannot change after coverage is requested.');
@@ -152,4 +154,4 @@ async function reject(leaveId, actor, reason) {
     return updated;
   });
 }
-module.exports = { TYPES, ACTIVE, CONFIRMED, fail, date, range, days, dayName, id, same, key, confirmed, transaction, coverage, eligible, createCoverage, accept, submit, approve, reject };
+module.exports = { TYPES, ACTIVE, CONFIRMED, fail, date, range, days, dayName, id, same, key, confirmed, transaction, lock, coverage, eligible, createCoverage, accept, submit, approve, reject };

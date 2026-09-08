@@ -62,7 +62,14 @@ async function createCoverage(teacher, body) {
   if (!TYPES.includes(body.leaveType)) fail('Invalid leave type.');
   return transaction(async session => {
     await lock(session, [teacher]);
-    if (await Leave.exists({ teacher, status: { $in: ACTIVE }, startDate: { $lte: end }, endDate: { $gte: start } }).session(session)) fail('An active leave already overlaps this date range.', 409);
+    const existing = await Leave.findOne({ teacher, status: { $in: ACTIVE }, startDate: { $lte: end }, endDate: { $gte: start } }).session(session);
+    if (existing) {
+      if (existing.startDate.getTime() === start.getTime() && existing.endDate.getTime() === end.getTime() && existing.leaveType === body.leaveType) {
+        const state = await coverage(existing, session);
+        return { leave: existing, requests: state.requests, createdCount: 0, message: 'This leave application already exists. No duplicate coverage requests were created.' };
+      }
+      fail('An active leave already overlaps this date range.', 409);
+    }
     const tt = await Timetable.findOne({ teacher }).session(session);
     if (!tt) fail('You have no timetable assigned.');
     const periods = days(start, end).flatMap(d => (tt.days.find(x => x.dayOfWeek === dayName(d))?.periods || []).map(p => ({ date: d, dayOfWeek: dayName(d), periodNumber: p.periodNumber, subject: p.subject, className: p.className, startTime: p.startTime, endTime: p.endTime, absentTeacher: teacher, status: 'open' })));
@@ -137,7 +144,7 @@ async function approve(leaveId, role) {
       const updated = await LeaveBalance.updateOne({ _id: balance._id, [field]: used }, { $inc: { [field]: count } }, { session });
       if (!updated.modifiedCount) fail('Leave balance changed. Please retry.', 409);
     }
-    const updated = await Leave.findOneAndUpdate({ _id: leaveId, status: expected, balancePostedAt: { $exists: false } }, { $set: { status: 'principal_approved', principalApprovedAt: now, balancePostedAt: now } }, { new: true, session });
+    const updated = await Leave.findOneAndUpdate({ _id: leaveId, status: expected, balancePostedAt: null }, { $set: { status: 'principal_approved', principalApprovedAt: now, balancePostedAt: now } }, { new: true, session });
     if (!updated) fail('Approval state changed.', 409);
     return updated;
   });

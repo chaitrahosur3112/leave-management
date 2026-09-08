@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const Module = require('node:module');
 function fixture() {
   const targets = Object.fromEntries(['Leave', 'SubstituteRequest', 'Timetable', 'LeaveBalance', 'User'].map(n => [n, {}]));
+  targets.User.updateOne = async () => ({ matchedCount: 1 });
   const models = new Proxy(targets, { set(target, name, value) { Object.assign(target[name], value); return true; } });
   const mongoose = { startSession: async () => ({ withTransaction: async fn => fn(), endSession: async () => {} }) };
   const original = Module._load;
@@ -20,7 +21,7 @@ const query = value => ({ session: async () => value });
 const leave = (status = 'coverage_pending') => ({ _id: 'leave1', teacher: 'absent', status, startDate: new Date('2026-09-10'), endDate: new Date('2026-09-11'), substituteRequests: ['r1', 'r2'], reason: 'Medical appointment' });
 const request = (id, status = 'open') => ({ _id: id, leave: 'leave1', absentTeacher: 'absent', date: new Date('2026-09-10'), dayOfWeek: 'Thursday', periodNumber: 1, className: '10A', status, substituteTeacher: status === 'open' ? null : 'teacher1' });
 
-test('strict date validation and inclusive ranges', () => {
+test('strict dates and inclusive ranges', () => {
   const { W } = fixture();
   assert.throws(() => W.date('2026-02-30'), /Invalid date/);
   assert.throws(() => W.date('2026-09-10T00:00:00'), /YYYY-MM-DD/);
@@ -29,7 +30,7 @@ test('strict date validation and inclusive ranges', () => {
   assert.equal(W.days(start, end).length, 2);
 });
 
-test('coverage requires every linked period and an assigned teacher', async () => {
+test('coverage requires every linked period and assigned teacher', async () => {
   const { W, models } = fixture();
   let rows = [request('r1', 'accepted')];
   models.SubstituteRequest = { find: () => query(rows) };
@@ -42,7 +43,7 @@ test('coverage requires every linked period and an assigned teacher', async () =
   assert.equal((await W.coverage(leave(), null)).complete, false);
 });
 
-test('only one atomic claim succeeds and incomplete coverage stays pending', async () => {
+test('atomic claim rejects a second teacher and leaves partial coverage pending', async () => {
   const { W, models } = fixture();
   const l = leave(), r = request('r1'), rows = [r, request('r2')];
   models.SubstituteRequest = { findById: () => query(r), findOneAndUpdate: async () => { if (r.status !== 'open') return null; r.status = 'accepted'; r.substituteTeacher = 'teacher1'; return r; }, find: () => query(rows), exists: () => query(false) };
@@ -54,7 +55,7 @@ test('only one atomic claim succeeds and incomplete coverage stays pending', asy
   await assert.rejects(W.accept('r1', 'teacher2'), /no longer open/);
 });
 
-test('submission rejects incomplete coverage and changed dates', async () => {
+test('submission requires full coverage and immutable dates', async () => {
   const { W, models } = fixture();
   const l = leave('substitute_confirmed'), rows = [request('r1', 'accepted'), request('r2')];
   models.Leave = { findOne: () => query(l), findOneAndUpdate: async () => ({ ...l, status: 'submitted' }) };
@@ -65,21 +66,17 @@ test('submission rejects incomplete coverage and changed dates', async () => {
   assert.equal((await W.submit('leave1', 'absent', { reason: 'Valid' })).status, 'submitted');
 });
 
-test('HOD cannot approve an unsubmitted leave', async () => {
+test('approval order cannot be bypassed or repeated', async () => {
   const { W, models } = fixture();
   models.Leave = { findById: () => query(leave('substitute_confirmed')) };
   await assert.rejects(W.approve('leave1', 'hod'), /approval stage/);
-});
-
-test('Principal approval cannot repeat or bypass HOD', async () => {
-  const { W, models } = fixture();
-  models.Leave = { findById: () => query(leave('submitted')) };
+  models.Leave.findById = () => query(leave('submitted'));
   await assert.rejects(W.approve('leave1', 'principal'), /approval stage/);
   models.Leave.findById = () => query(leave('principal_approved'));
   await assert.rejects(W.approve('leave1', 'principal'), /approval stage/);
 });
 
-test('Principal posts balance once in the approval transaction', async () => {
+test('Principal posts balance once', async () => {
   const { W, models } = fixture();
   const l = leave('hod_approved');
   let used = 0, posts = 0;
@@ -92,7 +89,7 @@ test('Principal posts balance once in the approval transaction', async () => {
   assert.equal(used, 2);
 });
 
-test('rejection requires a reason and the correct review stage', async () => {
+test('rejection requires a reason and correct review stage', async () => {
   const { W, models } = fixture();
   models.Leave = { findById: () => query(leave('submitted')) };
   await assert.rejects(W.reject('leave1', { _id: 'hod', role: 'hod' }, ''), /reason/);

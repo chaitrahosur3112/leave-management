@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
-
 function fixture() {
-  const models = {};
-  const session = {};
+  const targets = Object.fromEntries(['Leave', 'SubstituteRequest', 'Timetable', 'LeaveBalance', 'User'].map(n => [n, {}]));
+  const models = new Proxy(targets, { set(target, name, value) { Object.assign(target[name], value); return true; } });
   const mongoose = { startSession: async () => ({ withTransaction: async fn => fn(), endSession: async () => {} }) };
   const original = Module._load;
   Module._load = function (name, parent, main) {
@@ -15,18 +14,19 @@ function fixture() {
   let W;
   try { delete require.cache[require.resolve('../services/leaveWorkflow')]; W = require('../services/leaveWorkflow'); }
   finally { Module._load = original; }
-  return { W, models, session };
+  return { W, models };
 }
-function query(value) { return { session: async () => value }; }
-function leave(status = 'coverage_pending') { return { _id: 'leave1', teacher: 'absent', status, startDate: new Date('2026-09-10'), endDate: new Date('2026-09-11'), substituteRequests: ['r1', 'r2'], reason: 'Medical appointment' }; }
-function request(id, status = 'open') { return { _id: id, leave: 'leave1', absentTeacher: 'absent', date: new Date('2026-09-10'), dayOfWeek: 'Thursday', periodNumber: 1, className: '10A', status, substituteTeacher: status === 'open' ? null : 'teacher1' }; }
+const query = value => ({ session: async () => value });
+const leave = (status = 'coverage_pending') => ({ _id: 'leave1', teacher: 'absent', status, startDate: new Date('2026-09-10'), endDate: new Date('2026-09-11'), substituteRequests: ['r1', 'r2'], reason: 'Medical appointment' });
+const request = (id, status = 'open') => ({ _id: id, leave: 'leave1', absentTeacher: 'absent', date: new Date('2026-09-10'), dayOfWeek: 'Thursday', periodNumber: 1, className: '10A', status, substituteTeacher: status === 'open' ? null : 'teacher1' });
 
 test('strict date validation and inclusive ranges', () => {
   const { W } = fixture();
   assert.throws(() => W.date('2026-02-30'), /Invalid date/);
   assert.throws(() => W.date('2026-09-10T00:00:00'), /YYYY-MM-DD/);
   assert.throws(() => W.range('2026-09-11', '2026-09-10'), /precede/);
-  assert.equal(W.days(...Object.values(W.range('2026-09-10', '2026-09-11'))).length, 2);
+  const { start, end } = W.range('2026-09-10', '2026-09-11');
+  assert.equal(W.days(start, end).length, 2);
 });
 
 test('coverage requires every linked period and an assigned teacher', async () => {
@@ -44,15 +44,8 @@ test('coverage requires every linked period and an assigned teacher', async () =
 
 test('only one atomic claim succeeds and incomplete coverage stays pending', async () => {
   const { W, models } = fixture();
-  const l = leave();
-  const r = request('r1');
-  const rows = [r, request('r2')];
-  models.SubstituteRequest = {
-    findById: () => query(r),
-    findOneAndUpdate: async filter => { if (r.status !== 'open') return null; r.status = 'accepted'; r.substituteTeacher = 'teacher1'; return r; },
-    find: () => query(rows),
-    exists: () => query(false),
-  };
+  const l = leave(), r = request('r1'), rows = [r, request('r2')];
+  models.SubstituteRequest = { findById: () => query(r), findOneAndUpdate: async () => { if (r.status !== 'open') return null; r.status = 'accepted'; r.substituteTeacher = 'teacher1'; return r; }, find: () => query(rows), exists: () => query(false) };
   models.Leave = { findById: () => query(l), exists: () => query(false), updateOne: async () => ({ modifiedCount: 1 }) };
   models.User = { findById: () => query({ role: 'teacher' }) };
   models.Timetable = { findOne: () => query({ days: [{ dayOfWeek: 'Thursday', periods: [{ className: '10A', periodNumber: 2 }] }] }) };
@@ -63,8 +56,7 @@ test('only one atomic claim succeeds and incomplete coverage stays pending', asy
 
 test('submission rejects incomplete coverage and changed dates', async () => {
   const { W, models } = fixture();
-  const l = leave('substitute_confirmed');
-  const rows = [request('r1', 'accepted'), request('r2')];
+  const l = leave('substitute_confirmed'), rows = [request('r1', 'accepted'), request('r2')];
   models.Leave = { findOne: () => query(l), findOneAndUpdate: async () => ({ ...l, status: 'submitted' }) };
   models.SubstituteRequest = { find: () => query(rows) };
   await assert.rejects(W.submit('leave1', 'absent', { reason: 'Valid' }), /Not every/);
@@ -93,10 +85,7 @@ test('Principal posts balance once in the approval transaction', async () => {
   let used = 0, posts = 0;
   models.Leave = { findById: () => query(l), findOneAndUpdate: async () => { l.status = 'principal_approved'; l.balancePostedAt = new Date(); return l; } };
   models.SubstituteRequest = { find: () => query([request('r1', 'accepted'), request('r2', 'accepted')]) };
-  models.LeaveBalance = {
-    findOneAndUpdate: async () => ({ _id: 'balance1', firstHalfTotal: 7, firstHalfUsed: used, secondHalfTotal: 8, secondHalfUsed: 0 }),
-    updateOne: async (filter, update) => { used += update.$inc.secondHalfUsed || update.$inc.firstHalfUsed || 0; posts++; return { modifiedCount: 1 }; },
-  };
+  models.LeaveBalance = { findOneAndUpdate: async () => ({ _id: 'balance1', firstHalfTotal: 7, firstHalfUsed: used, secondHalfTotal: 8, secondHalfUsed: 0 }), updateOne: async (filter, update) => { used += update.$inc.secondHalfUsed || update.$inc.firstHalfUsed || 0; posts++; return { modifiedCount: 1 }; } };
   await W.approve('leave1', 'principal');
   assert.equal(used, 2); assert.equal(posts, 1);
   await assert.rejects(W.approve('leave1', 'principal'), /approval stage/);

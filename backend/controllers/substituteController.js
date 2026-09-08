@@ -1,292 +1,50 @@
-// controllers/substituteController.js — UPDATED
-// KEY CHANGES:
-//  1. requestSubstitute now takes startDate + endDate + leaveType
-//     and auto-creates ONE substitute request per period per day
-//     in the date range — all in one go
-//  2. acceptRequest links ALL those sub requests to ONE leave document
-
 const SubstituteRequest = require('../models/SubstituteRequest');
-const Leave             = require('../models/Leave');
-const Timetable         = require('../models/Timetable');
-const User              = require('../models/User');
+const Leave = require('../models/Leave');
+const Timetable = require('../models/Timetable');
+const W = require('../services/leaveWorkflow');
+const send = (res, e) => res.status(e.status || (e.code === 11000 ? 409 : 500)).json({ message: e.code === 11000 ? 'A conflicting request or assignment already exists.' : e.message });
 
-// Helper: get all dates between startDate and endDate inclusive
-function getDatesInRange(startStr, endStr) {
-  const dates = [];
-  const cur   = new Date(startStr + 'T12:00:00');
-  const end   = new Date(endStr   + 'T12:00:00');
-  while (cur <= end) {
-    dates.push(new Date(cur));
-    cur.setDate(cur.getDate() + 1);
-  }
-  return dates;
-}
-
-// Helper: get day name from Date object
-function getDayName(dateObj) {
-  return dateObj.toLocaleDateString('en-US', { weekday: 'long' });
-}
-
-// ─────────────────────────────────────────────────────────────────
-// POST /api/substitutes/request
-// ── UPDATED: takes startDate + endDate + leaveType ──
-// Creates ONE sub request for EVERY period across EVERY day in range
-// Body: { startDate, endDate, leaveType }
-// ─────────────────────────────────────────────────────────────────
 exports.requestSubstitute = async (req, res) => {
-  try {
-    const { startDate, endDate, leaveType } = req.body;
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({ message: 'startDate and endDate are required' });
-    }
-    if (new Date(endDate) < new Date(startDate)) {
-      return res.status(400).json({ message: 'endDate cannot be before startDate' });
-    }
-
-    // 1. Get the absent teacher's timetable
-    const myTT = await Timetable.findOne({ teacher: req.user._id });
-    if (!myTT) return res.status(400).json({ message: 'You have no timetable assigned yet.' });
-
-    // 2. Get all timetables of other teachers (for finding free same-class teachers)
-    const allOtherTT = await Timetable.find({ teacher: { $ne: req.user._id } })
-      .populate('teacher', 'name email role');
-
-    // 3. Loop through every date in the range
-    const allDates     = getDatesInRange(startDate, endDate);
-    const createdSubs  = [];
-    const skippedDays  = []; // days with no classes
-
-    for (const dateObj of allDates) {
-      const dayName  = getDayName(dateObj);
-      const dayEntry = myTT.days.find(d => d.dayOfWeek === dayName);
-
-      // No classes that day — skip (weekend or free day)
-      if (!dayEntry || dayEntry.periods.length === 0) {
-        skippedDays.push(dayName);
-        continue;
-      }
-
-      // 4. For each period on this day, create a substitute request
-      for (const period of dayEntry.periods) {
-
-        // Find free same-class teachers for this period
-        const freeTeacherIds = [];
-        for (const tt of allOtherTT) {
-          const theirDay = tt.days.find(d => d.dayOfWeek === dayName);
-
-          // Check they teach the same class
-          const allPeriods = theirDay ? theirDay.periods : [];
-          const teachSameClass = allPeriods.some(p => p.className === period.className);
-          if (!teachSameClass) continue;
-
-          // Check they're FREE at this period (no class at this period number)
-          const conflict = allPeriods.find(p => p.periodNumber === period.periodNumber);
-          if (!conflict) {
-            freeTeacherIds.push(tt.teacher._id);
-          }
-        }
-
-        // Create the substitute request
-        const subReq = await SubstituteRequest.create({
-          absentTeacher: req.user._id,
-          periodNumber:  period.periodNumber,
-          subject:       period.subject,
-          className:     period.className,
-          startTime:     period.startTime,
-          endTime:       period.endTime,
-          dayOfWeek:     dayName,
-          date:          new Date(dateObj.toISOString().split('T')[0] + 'T00:00:00'),
-          status:        'open',
-        });
-
-        createdSubs.push(subReq);
-      }
-    }
-
-    if (createdSubs.length === 0) {
-      return res.status(400).json({
-        message: `No classes found between ${startDate} and ${endDate}. Nothing to request.`,
-      });
-    }
-
-    // 5. Store the requested leave type on the user temporarily
-    //    (will be used when a substitute accepts and creates the Leave)
-    //    We pass it back in the response — frontend shows it in the form
-    const totalDays = allDates.length - skippedDays.length;
-
-    res.status(201).json({
-      message: `✅ Substitute requests sent for ${createdSubs.length} period(s) across ${totalDays} day(s). Free same-class teachers have been notified.`,
-      createdCount: createdSubs.length,
-      daysCovered:  totalDays,
-      leaveType,    // echoed back so frontend can store it
-      startDate,
-      endDate,
-      requests: createdSubs,
-    });
-  } catch (e) {
-    console.error('requestSubstitute error:', e);
-    res.status(500).json({ message: e.message });
-  }
+  try { res.status(201).json(await W.createCoverage(req.user._id, req.body)); }
+  catch (e) { send(res, e); }
 };
-
-// ─────────────────────────────────────────────────────────────────
-// GET /api/substitutes/my
-// Returns open sub requests where the logged-in teacher:
-//   - teaches the same class
-//   - is free during that period
-// ─────────────────────────────────────────────────────────────────
 exports.getMyRequests = async (req, res) => {
   try {
-    const myTT = await Timetable.findOne({ teacher: req.user._id });
-
-    const allOpen = await SubstituteRequest.find({
-      absentTeacher: { $ne: req.user._id },
-      status:        'open',
-      declinedBy:    { $ne: req.user._id },
-    }).populate('absentTeacher', 'name email');
-
-    if (!myTT) return res.json([]);
-
-    const relevant = allOpen.filter(req2 => {
-      const myDay      = myTT.days.find(d => d.dayOfWeek === req2.dayOfWeek);
-      const allPeriods = myDay ? myDay.periods : [];
-
-      // I must teach the same class somewhere
-      const teachSameClass = allPeriods.some(p => p.className === req2.className);
-      if (!teachSameClass) return false;
-
-      // I must be FREE at that period number
-      const conflict = allPeriods.find(p => p.periodNumber === req2.periodNumber);
-      return !conflict;
-    });
-
-    res.json(relevant);
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────
-// PATCH /api/substitutes/:id/accept
-// ── UPDATED: checks if a leave already exists for this absent teacher
-//    for this date range — if yes, links to it; if no, creates one ──
-// ─────────────────────────────────────────────────────────────────
-exports.acceptRequest = async (req, res) => {
-  try {
-    const subReq = await SubstituteRequest.findById(req.params.id)
-      .populate('absentTeacher', 'name email');
-    if (!subReq) return res.status(404).json({ message: 'Request not found' });
-    if (subReq.status !== 'open')
-      return res.status(400).json({ message: 'Request is no longer open' });
-
-    // Mark this sub request as accepted
-    subReq.status            = 'accepted';
-    subReq.substituteTeacher = req.user._id;
-    await subReq.save();
-
-    // Check if a leave already exists for this absent teacher
-    // (another period from the same date range may have already created one)
-    let leave = await Leave.findOne({
-      teacher: subReq.absentTeacher._id,
-      status:  'substitute_confirmed',
-      // Match leaves whose date range overlaps with this sub request date
-      startDate: { $lte: subReq.date },
-      endDate:   { $gte: subReq.date },
-    });
-
-    if (leave) {
-      // Add this sub request to the existing leave
-      if (!leave.substituteRequests.includes(subReq._id)) {
-        leave.substituteRequests.push(subReq._id);
-        await leave.save();
-      }
-    } else {
-      // Create a new leave document
-      leave = await Leave.create({
-        teacher:            subReq.absentTeacher._id,
-        leaveType:          'casual',   // teacher will update this
-        startDate:          subReq.date,
-        endDate:            subReq.date,
-        reason:             '',         // teacher fills this
-        substituteTeacher:  req.user._id,
-        substituteRequests: [subReq._id],
-        status:             'substitute_confirmed',
-      });
+    const requests = await SubstituteRequest.find({ absentTeacher: { $ne: req.user._id }, status: 'open', declinedBy: { $ne: req.user._id } }).populate('absentTeacher', 'name email').populate('leave', 'startDate endDate leaveType status');
+    const relevant = [];
+    for (const request of requests) {
+      if (request.leave && await W.eligible(req.user._id, request, null)) relevant.push(request);
     }
-
-    // Link leave back to sub request
-    subReq.leave = leave._id;
-    await subReq.save();
-
-    res.json({
-      message: 'You accepted! The absent teacher will now fill their leave details.',
-      leave,
-    });
-  } catch (e) {
-    console.error('acceptRequest error:', e);
-    res.status(500).json({ message: e.message });
-  }
+    res.json(relevant);
+  } catch (e) { send(res, e); }
 };
-
-// ─────────────────────────────────────────────────────────────────
-// PATCH /api/substitutes/:id/decline
-// ─────────────────────────────────────────────────────────────────
+exports.acceptRequest = async (req, res) => {
+  try { res.json({ message: 'Substitute accepted.', ...await W.accept(req.params.id, req.user._id) }); }
+  catch (e) { send(res, e); }
+};
 exports.declineRequest = async (req, res) => {
   try {
-    const subReq = await SubstituteRequest.findById(req.params.id);
-    if (!subReq) return res.status(404).json({ message: 'Not found' });
-    subReq.declinedBy.push(req.user._id);
-    await subReq.save();
-    res.json({ message: 'Declined. Other available teachers will still see this request.' });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
+    const request = await SubstituteRequest.findOneAndUpdate({ _id: req.params.id, status: 'open', absentTeacher: { $ne: req.user._id } }, { $addToSet: { declinedBy: req.user._id } }, { new: true });
+    if (!request) return res.status(409).json({ message: 'Request is no longer open.' });
+    res.json({ message: 'Declined.', request });
+  } catch (e) { send(res, e); }
 };
-
-// ─────────────────────────────────────────────────────────────────
-// GET /api/substitutes/all — HOD / Principal
-// ─────────────────────────────────────────────────────────────────
 exports.getAllSubRequests = async (req, res) => {
-  try {
-    const all = await SubstituteRequest.find()
-      .populate('absentTeacher',     'name email')
-      .populate('substituteTeacher', 'name email')
-      .sort({ createdAt: -1 });
-    res.json(all);
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
+  try { res.json(await SubstituteRequest.find().populate('absentTeacher substituteTeacher', 'name email').populate('leave', 'startDate endDate leaveType status').sort({ createdAt: -1 })); }
+  catch (e) { send(res, e); }
 };
-
-// ─────────────────────────────────────────────────────────────────
-// PATCH /api/substitutes/:id/hod-approve
-// ─────────────────────────────────────────────────────────────────
-exports.hodApproveSubstitute = async (req, res) => {
+async function approveAssignment(req, res, from, to) {
   try {
-    const subReq = await SubstituteRequest.findByIdAndUpdate(
-      req.params.id,
-      { status: 'hod_approved' },
-      { new: true }
-    ).populate('absentTeacher substituteTeacher', 'name email');
-    res.json({ message: 'Substitute assignment confirmed by HOD.', subReq });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────
-// PATCH /api/substitutes/:id/principal-approve
-// ─────────────────────────────────────────────────────────────────
-exports.principalApproveSubstitute = async (req, res) => {
-  try {
-    const subReq = await SubstituteRequest.findByIdAndUpdate(
-      req.params.id,
-      { status: 'principal_approved' },
-      { new: true }
-    );
-    res.json({ message: 'Approved.', subReq });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
+    const result = await W.transaction(async session => {
+      const request = await SubstituteRequest.findById(req.params.id).session(session);
+      if (!request) W.fail('Request not found.', 404);
+      if (request.status !== from || !request.substituteTeacher) W.fail('Assignment is not at this approval stage.', 409);
+      const leave = await Leave.findById(request.leave).session(session);
+      if (!leave || (to === 'hod_approved' ? !['submitted', 'hod_approved'].includes(leave.status) : leave.status !== 'principal_approved')) W.fail('Leave has not reached this approval stage.', 409);
+      return SubstituteRequest.findOneAndUpdate({ _id: request._id, status: from }, { $set: { status: to } }, { new: true, session });
+    });
+    res.json({ message: 'Assignment approved.', subReq: result });
+  } catch (e) { send(res, e); }
+}
+exports.hodApproveSubstitute = (req, res) => approveAssignment(req, res, 'accepted', 'hod_approved');
+exports.principalApproveSubstitute = (req, res) => approveAssignment(req, res, 'hod_approved', 'principal_approved');

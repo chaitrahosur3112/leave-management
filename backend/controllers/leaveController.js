@@ -1,13 +1,13 @@
-// controllers/leaveController.js
-// Leave is created automatically when substitute accepts.
-// Teacher then fills in reason + leaveType via PATCH /api/leaves/:id/details
-// HOD sees only "substitute_confirmed" leaves.
+// controllers/leaveController.js — FIXED
+// Uses LeaveBalance model (your existing system) for balance read/write
+// Added privilegedLeaves from User model
 
-const Leave    = require('../models/Leave');
-const User     = require('../models/User'); // adjust if your model is named differently
+const Leave        = require('../models/Leave');
+const User         = require('../models/User');
+const LeaveBalance = require('../models/LeaveBalance');
 
 // ─────────────────────────────────────────────────────────────────
-// GET /api/leaves/my  — teacher sees their own leaves
+// GET /api/leaves/my
 // ─────────────────────────────────────────────────────────────────
 exports.getMyLeaves = async (req, res) => {
   try {
@@ -22,16 +22,35 @@ exports.getMyLeaves = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// GET /api/leaves/balance  — teacher's leave balance
+// GET /api/leaves/balance
+// Reads from LeaveBalance model + privilegedLeaves from User
 // ─────────────────────────────────────────────────────────────────
 exports.getLeaveBalance = async (req, res) => {
   try {
+    const year = new Date().getFullYear();
+
+    // Get or auto-create LeaveBalance for this teacher + year
+    let bal = await LeaveBalance.findOne({ teacher: req.user._id, year });
+    if (!bal) {
+      bal = await LeaveBalance.create({
+        teacher:         req.user._id,
+        year,
+        firstHalfTotal:  7,
+        firstHalfUsed:   0,
+        secondHalfTotal: 8,
+        secondHalfUsed:  0,
+      });
+    }
+
+    // Get privilegedLeaves from User model (carry-over from last year)
     const user = await User.findById(req.user._id);
+
     res.json({
-      firstHalfTotal:  user.firstHalfTotal  || 7,
-      firstHalfUsed:   user.firstHalfUsed   || 0,
-      secondHalfTotal: user.secondHalfTotal || 8,
-      secondHalfUsed:  user.secondHalfUsed  || 0,
+      firstHalfTotal:   bal.firstHalfTotal,
+      firstHalfUsed:    bal.firstHalfUsed,
+      secondHalfTotal:  bal.secondHalfTotal,
+      secondHalfUsed:   bal.secondHalfUsed,
+      privilegedLeaves: user?.privilegedLeaves || 0,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -40,12 +59,12 @@ exports.getLeaveBalance = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────
 // PATCH /api/leaves/:id/details
-// Teacher fills in reason + leaveType + endDate after substitute accepts
-// This is the "Leave Application Form" that appears after acceptance
+// Teacher fills reason + leaveType + startDate + endDate
+// after substitute accepts
 // ─────────────────────────────────────────────────────────────────
 exports.fillLeaveDetails = async (req, res) => {
   try {
-    const { reason, leaveType, endDate } = req.body;
+    const { reason, leaveType, startDate, endDate } = req.body;
     const leave = await Leave.findOne({ _id: req.params.id, teacher: req.user._id });
     if (!leave) return res.status(404).json({ message: 'Leave not found' });
     if (leave.status !== 'substitute_confirmed') {
@@ -57,9 +76,9 @@ exports.fillLeaveDetails = async (req, res) => {
 
     leave.reason    = reason.trim();
     leave.leaveType = leaveType;
-    if (endDate) leave.endDate = new Date(endDate + 'T00:00:00');
+    if (startDate) leave.startDate = new Date(startDate + 'T00:00:00');
+    if (endDate)   leave.endDate   = new Date(endDate   + 'T00:00:00');
 
-    // Status stays "substitute_confirmed" — HOD will see it
     await leave.save();
     await leave.populate('substituteTeacher', 'name email');
     res.json({ message: 'Leave details saved. HOD will now review.', leave });
@@ -69,8 +88,7 @@ exports.fillLeaveDetails = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// GET /api/leaves/all  — HOD / Principal sees all leaves
-// HOD only sees substitute_confirmed (ready to approve)
+// GET /api/leaves/all — HOD / Principal sees all leaves
 // ─────────────────────────────────────────────────────────────────
 exports.getAllLeaves = async (req, res) => {
   try {
@@ -87,19 +105,15 @@ exports.getAllLeaves = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────
 // PATCH /api/leaves/:id/hod-approve
-// HOD approves — only if substitute is confirmed
+// HOD approves — only when substitute is confirmed
 // ─────────────────────────────────────────────────────────────────
 exports.hodApprove = async (req, res) => {
   try {
     const leave = await Leave.findById(req.params.id);
     if (!leave) return res.status(404).json({ message: 'Not found' });
-
     if (leave.status !== 'substitute_confirmed') {
-      return res.status(400).json({
-        message: 'Cannot approve: substitute has not been confirmed yet.'
-      });
+      return res.status(400).json({ message: 'Cannot approve: substitute not confirmed yet.' });
     }
-
     leave.status        = 'hod_approved';
     leave.hodApprovedAt = new Date();
     await leave.save();
@@ -112,37 +126,44 @@ exports.hodApprove = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────
 // PATCH /api/leaves/:id/principal-approve
-// Principal gives final approval — deducts leave balance
+// Final approval — deducts from LeaveBalance (your existing model)
 // ─────────────────────────────────────────────────────────────────
 exports.principalApprove = async (req, res) => {
   try {
     const leave = await Leave.findById(req.params.id).populate('teacher');
     if (!leave) return res.status(404).json({ message: 'Not found' });
 
-    leave.status             = 'principal_approved';
+    leave.status              = 'principal_approved';
     leave.principalApprovedAt = new Date();
     await leave.save();
 
-    // Deduct from teacher's balance
+    // Calculate number of leave days
     const start = new Date(leave.startDate);
     const end   = new Date(leave.endDate);
-    const days  = Math.ceil((end - start) / 86400000) + 1;
-    const month = start.getMonth() + 1; // 1–12
+    const days  = Math.max(1, Math.ceil((end - start) / 86400000) + 1);
+    const month = start.getMonth() + 1; // 1-12
+    const year  = start.getFullYear();
 
-    const update = month <= 6
-      ? { $inc: { firstHalfUsed:  days } }
-      : { $inc: { secondHalfUsed: days } };
+    // Deduct from LeaveBalance using your existing model
+    const field = month <= 6 ? 'firstHalfUsed' : 'secondHalfUsed';
+    const updatedBal = await LeaveBalance.findOneAndUpdate(
+      { teacher: leave.teacher._id, year },
+      { $inc: { [field]: days } },
+      { new: true, upsert: true }  // create if doesn't exist
+    );
 
-    const updatedUser = await User.findByIdAndUpdate(
-    leave.teacher._id,
-    update,
-    { new: true }
-  );
+    console.log(`✅ Balance deducted for ${leave.teacher.name}: ${field} += ${days} → now ${updatedBal[field]}`);
 
-console.log("Updated User:", updatedUser);
-
-    res.json({ message: `Fully approved! ${days} day(s) deducted.`, leave });
+    res.json({
+      message: `Fully approved! ${days} day(s) deducted from balance.`,
+      leave,
+      updatedBalance: {
+        firstHalfUsed:  updatedBal.firstHalfUsed,
+        secondHalfUsed: updatedBal.secondHalfUsed,
+      },
+    });
   } catch (e) {
+    console.error('principalApprove error:', e);
     res.status(500).json({ message: e.message });
   }
 };
@@ -164,7 +185,7 @@ exports.rejectLeave = async (req, res) => {
   }
 };
 
-// Keep old applyLeave for backward compat (not used in new flow)
+// Kept for backward compat — not used in new workflow
 exports.applyLeave = async (req, res) => {
   res.status(400).json({
     message: 'Direct leave application is disabled. Please use "Request Substitute" first.'

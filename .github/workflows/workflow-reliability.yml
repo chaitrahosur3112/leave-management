@@ -1,0 +1,41 @@
+name: Workflow reliability
+on:
+  push:
+    branches: [workflow-reliability-fixes]
+  pull_request:
+    branches: [workflow-reliability-fixes]
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm test
+        working-directory: backend
+      - run: node --check services/leaveWorkflow.js
+        working-directory: backend
+      - run: node --check controllers/leaveController.js
+        working-directory: backend
+      - run: node --check controllers/substituteController.js
+        working-directory: backend
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+        env:
+          CI: 'false'

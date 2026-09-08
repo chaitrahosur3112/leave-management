@@ -29,7 +29,9 @@ export default function WorkflowDashboard() {
  useEffect(()=>{load().catch(e=>setMessage(error(e)));},[load]);
  async function act(fn){if(busy)return;setBusy(true);setMessage('');try{const result=await fn();await load();setMessage(result?.data?.message||'Saved successfully.');}catch(e){setMessage(error(e));}finally{setBusy(false);}}
  const logout=()=>{localStorage.removeItem('token');localStorage.removeItem('user');navigate('/login');};
- const pending=leaves.filter(l=>l.status==='substitute_confirmed'&&progress(l).complete);
+ // The API returns newest leaves first. Only one ready application is displayed;
+ // other records remain available in history and are never merged or deleted.
+ const pending=leaves.filter(l=>l.status==='substitute_confirmed'&&progress(l).complete).slice(0,1);
  const active=leaves.filter(l=>['coverage_pending','substitute_confirmed'].includes(l.status));
  const tabs=role==='teacher'?[['dashboard','Dashboard'],['request','Request Substitute'],['substitutes',`Substitutes${requests.length?' ('+requests.length+')':''}`]]:[['dashboard','Dashboard'],['review','Leave review'],['assignments','Substitutes']];
  return <main style={{maxWidth:980,margin:'0 auto',padding:'24px 16px',fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',color:'#111827'}}>
